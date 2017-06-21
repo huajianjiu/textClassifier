@@ -2,7 +2,6 @@
 # Dec 26 2016
 import numpy as np
 import pandas as pd
-import cPickle
 from collections import defaultdict
 import re
 
@@ -10,8 +9,9 @@ from bs4 import BeautifulSoup
 
 import sys
 import os
+import json
 
-os.environ['KERAS_BACKEND']='theano'
+# os.environ['KERAS_BACKEND']='theano'
 
 from keras.preprocessing.text import Tokenizer, text_to_word_sequence
 from keras.preprocessing.sequence import pad_sequences
@@ -24,7 +24,7 @@ from keras.models import Model
 
 from keras import backend as K
 from keras.engine.topology import Layer, InputSpec
-from keras import initializations
+from keras import initializers, regularizers, constraints
 
 MAX_SENT_LENGTH = 100
 MAX_SENTS = 15
@@ -42,25 +42,26 @@ def clean_str(string):
     string = re.sub(r"\"", "", string)    
     return string.strip().lower()
 
-data_train = pd.read_csv('~/Testground/data/imdb/labeledTrainData.tsv', sep='\t')
-print data_train.shape
 
+data_train = json.load(open('/home/yuanzhike/IMDB10/data.json'))
+
+print('start reading {0}'.format('/home/yuanzhike/IMDB10/data.json'))
 from nltk import tokenize
 
 reviews = []
 labels = []
 texts = []
 
-for idx in range(data_train.review.shape[0]):
-    text = BeautifulSoup(data_train.review[idx])
-    text = clean_str(text.get_text().encode('ascii','ignore'))
+for idx, review_object in enumerate(data_train):
+    text = review_object['review']
+    text = clean_str(text.encode('ascii', 'ignore').decode('ascii'))
     texts.append(text)
     sentences = tokenize.sent_tokenize(text)
     reviews.append(sentences)
-    
-    labels.append(data_train.sentiment[idx])
 
-tokenizer = Tokenizer(nb_words=MAX_NB_WORDS)
+    labels.append(review_object['rating'])
+
+tokenizer = Tokenizer(num_words=MAX_NB_WORDS)
 tokenizer.fit_on_texts(texts)
 
 data = np.zeros((len(texts), MAX_SENTS, MAX_SENT_LENGTH), dtype='int32')
@@ -94,12 +95,11 @@ x_val = data[-nb_validation_samples:]
 y_val = labels[-nb_validation_samples:]
 
 print('Number of positive and negative reviews in traing and validation set')
-print y_train.sum(axis=0)
-print y_val.sum(axis=0)
+print(y_train.sum(axis=0))
+print(y_val.sum(axis=0))
 
-GLOVE_DIR = "/ext/home/analyst/Testground/data/glove"
 embeddings_index = {}
-f = open(os.path.join(GLOVE_DIR, 'glove.6B.100d.txt'))
+f = open("/home/yuanzhike/data/glove/glove.6B.100d.txt")
 for line in f:
     values = line.split()
     word = values[0]
@@ -109,38 +109,38 @@ f.close()
 
 print('Total %s word vectors.' % len(embeddings_index))
 
-embedding_matrix = np.random.random((len(word_index) + 1, EMBEDDING_DIM))
-for word, i in word_index.items():
-    embedding_vector = embeddings_index.get(word)
-    if embedding_vector is not None:
-        # words not found in embedding index will be all-zeros.
-        embedding_matrix[i] = embedding_vector
-        
-embedding_layer = Embedding(len(word_index) + 1,
-                            EMBEDDING_DIM,
-                            weights=[embedding_matrix],
-                            input_length=MAX_SENT_LENGTH,
-                            trainable=True)
-
-sentence_input = Input(shape=(MAX_SENT_LENGTH,), dtype='int32')
-embedded_sequences = embedding_layer(sentence_input)
-l_lstm = Bidirectional(LSTM(100))(embedded_sequences)
-sentEncoder = Model(sentence_input, l_lstm)
-
-review_input = Input(shape=(MAX_SENTS,MAX_SENT_LENGTH), dtype='int32')
-review_encoder = TimeDistributed(sentEncoder)(review_input)
-l_lstm_sent = Bidirectional(LSTM(100))(review_encoder)
-preds = Dense(2, activation='softmax')(l_lstm_sent)
-model = Model(review_input, preds)
-
-model.compile(loss='categorical_crossentropy',
-              optimizer='rmsprop',
-              metrics=['acc'])
-
-print("model fitting - Hierachical LSTM")
-print model.summary()
-model.fit(x_train, y_train, validation_data=(x_val, y_val),
-          nb_epoch=10, batch_size=50)
+# embedding_matrix = np.random.random((len(word_index) + 1, EMBEDDING_DIM))
+# for word, i in word_index.items():
+#     embedding_vector = embeddings_index.get(word)
+#     if embedding_vector is not None:
+#         # words not found in embedding index will be all-zeros.
+#         embedding_matrix[i] = embedding_vector
+#
+# embedding_layer = Embedding(len(word_index) + 1,
+#                             EMBEDDING_DIM,
+#                             weights=[embedding_matrix],
+#                             input_length=MAX_SENT_LENGTH,
+#                             trainable=True)
+#
+# sentence_input = Input(shape=(MAX_SENT_LENGTH,), dtype='int32')
+# embedded_sequences = embedding_layer(sentence_input)
+# l_lstm = Bidirectional(LSTM(100))(embedded_sequences)
+# sentEncoder = Model(sentence_input, l_lstm)
+#
+# review_input = Input(shape=(MAX_SENTS,MAX_SENT_LENGTH), dtype='int32')
+# review_encoder = TimeDistributed(sentEncoder)(review_input)
+# l_lstm_sent = Bidirectional(LSTM(100))(review_encoder)
+# preds = Dense(2, activation='softmax')(l_lstm_sent)
+# model = Model(review_input, preds)
+#
+# model.compile(loss='categorical_crossentropy',
+#               optimizer='rmsprop',
+#               metrics=['acc'])
+#
+# print("model fitting - Hierachical LSTM")
+# print model.summary()
+# model.fit(x_train, y_train, validation_data=(x_val, y_val),
+#           nb_epoch=10, batch_size=50)
 
 # building Hierachical Attention network
 embedding_matrix = np.random.random((len(word_index) + 1, EMBEDDING_DIM))
@@ -157,30 +157,81 @@ embedding_layer = Embedding(len(word_index) + 1,
                             trainable=True)
 
 class AttLayer(Layer):
-    def __init__(self, **kwargs):
-        self.init = initializations.get('normal')
-        #self.input_spec = [InputSpec(ndim=3)]
-        super(AttLayer, self).__init__(**kwargs)
+    def __init__(self,
+                 W_regularizer=None, u_regularizer=None, b_regularizer=None,
+                 W_constraint=None, u_constraint=None, b_constraint=None,
+                 bias=True, **kwargs):
+
+        self.supports_masking = True
+        self.init = initializers.get('glorot_uniform')
+
+        self.W_regularizer = regularizers.get(W_regularizer)
+        self.u_regularizer = regularizers.get(u_regularizer)
+        self.b_regularizer = regularizers.get(b_regularizer)
+
+        self.W_constraint = constraints.get(W_constraint)
+        self.u_constraint = constraints.get(u_constraint)
+        self.b_constraint = constraints.get(b_constraint)
+
+        self.bias = bias
+        super(AttentionWithContext, self).__init__(**kwargs)
 
     def build(self, input_shape):
-        assert len(input_shape)==3
-        #self.W = self.init((input_shape[-1],1))
-        self.W = self.init((input_shape[-1],))
-        #self.input_spec = [InputSpec(shape=input_shape)]
-        self.trainable_weights = [self.W]
-        super(AttLayer, self).build(input_shape)  # be sure you call this somewhere!
+        assert len(input_shape) == 3
+
+        self.W = self.add_weight((input_shape[-1], input_shape[-1],),
+                                 initializer=self.init,
+                                 name='{}_W'.format(self.name),
+                                 regularizer=self.W_regularizer,
+                                 constraint=self.W_constraint)
+        if self.bias:
+            self.b = self.add_weight((input_shape[-1],),
+                                     initializer='zero',
+                                     name='{}_b'.format(self.name),
+                                     regularizer=self.b_regularizer,
+                                     constraint=self.b_constraint)
+
+        self.u = self.add_weight((input_shape[-1],),
+                                 initializer=self.init,
+                                 name='{}_u'.format(self.name),
+                                 regularizer=self.u_regularizer,
+                                 constraint=self.u_constraint)
+
+        super(AttentionWithContext, self).build(input_shape)
+
+    def compute_mask(self, input, input_mask=None):
+        # do not pass the mask to the next layers
+        return None
 
     def call(self, x, mask=None):
-        eij = K.tanh(K.dot(x, self.W))
-        
-        ai = K.exp(eij)
-        weights = ai/K.sum(ai, axis=1).dimshuffle(0,'x')
-        
-        weighted_input = x*weights.dimshuffle(0,1,'x')
-        return weighted_input.sum(axis=1)
+        uit = K.dot(x, self.W)
 
-    def get_output_shape_for(self, input_shape):
-        return (input_shape[0], input_shape[-1])
+        if self.bias:
+            uit += self.b
+
+        uit = K.tanh(uit)
+        # ait = K.dot(uit, self.u)  # replace this
+        mul_a = uit * self.u  # with this
+        ait = K.sum(mul_a, axis=2)  # and this
+
+        a = K.exp(ait)
+
+        # apply mask after the exp. will be re-normalized next
+        if mask is not None:
+            # Cast the mask to floatX to avoid float64 upcasting in theano
+            a *= K.cast(mask, K.floatx())
+
+        # in some cases especially in the early stages of training the sum may be almost zero
+        # and this results in NaN's. A workaround is to add a very small positive number ε to the sum.
+        # a /= K.cast(K.sum(a, axis=1, keepdims=True), K.floatx())
+        a /= K.cast(K.sum(a, axis=1, keepdims=True) + K.epsilon(), K.floatx())
+
+        a = K.expand_dims(a)
+        weighted_input = x * a
+        return K.sum(weighted_input, axis=1)
+
+    def compute_output_shape(self, input_shape):
+        return input_shape[0], input_shape[-1]
 
 sentence_input = Input(shape=(MAX_SENT_LENGTH,), dtype='int32')
 embedded_sequences = embedding_layer(sentence_input)
@@ -194,8 +245,10 @@ review_encoder = TimeDistributed(sentEncoder)(review_input)
 l_lstm_sent = Bidirectional(GRU(100, return_sequences=True))(review_encoder)
 l_dense_sent = TimeDistributed(Dense(200))(l_lstm_sent)
 l_att_sent = AttLayer()(l_dense_sent)
-preds = Dense(2, activation='softmax')(l_att_sent)
+preds = Dense(11, activation='softmax')(l_att_sent)
 model = Model(review_input, preds)
+
+model.summary()
 
 model.compile(loss='categorical_crossentropy',
               optimizer='rmsprop',
